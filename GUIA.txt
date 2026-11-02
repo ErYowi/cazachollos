@@ -1,0 +1,34 @@
+CAZACHOLLOS EN LA NUBE — funciona 24 h con el PC apagado (gratis, 0 tokens)
+
+1) CUENTA
+   Entra en github.com y créate una cuenta gratis (si no tienes).
+
+2) REPOSITORIO
+   Arriba a la derecha "+" → "New repository".
+   - Nombre: cazachollos
+   - Marca "Public" (así es gratis e ilimitado; tus claves de Telegram quedan ocultas igualmente).
+   - Pulsa "Create repository".
+
+3) SUBIR ARCHIVOS
+   En el repositorio nuevo pulsa "uploading an existing file".
+   Arrastra TODO lo que hay dentro de la carpeta Cazachollos-Nube
+   (incluida la carpeta .github) → "Commit changes".
+
+4) CLAVES DE TELEGRAM (secretas)
+   Settings → Secrets and variables → Actions → "New repository secret":
+   - Nombre: TELEGRAM_TOKEN     Valor: el token de @BotFather
+   - Nombre: TELEGRAM_CHAT_ID   Valor: tu ID de chat (el mismo de la extensión)
+
+5) ENCENDER
+   Pestaña "Actions" → si lo pide, "I understand… enable" →
+   "Cazachollos" → "Run workflow".
+   En 2-4 min te llega a Telegram "Cazachollos en la nube activado"
+   y si Wallapop y Vinted funcionan desde el servidor.
+
+A partir de ahí busca solo cada 30 minutos, día y noche.
+
+CAMBIAR COSAS: edita config.json en GitHub (lápiz ✏️):
+   - minDiscount: descuento mínimo (15)
+   - busquedas: pon "on": false para apagar una, cambia min/max de precio.
+
+APAGARLO: Actions → Cazachollos → "..." → Disable workflow.
