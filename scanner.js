@@ -232,12 +232,17 @@ async function vintedSearch(s) {
 }
 
 const vUserCache = new Map();
+let vDebugDone = false;
 async function vintedUser(id) {
   if (vUserCache.has(id)) return vUserCache.get(id);
   let info = { reviews: 0, items: 0, country: "?", city: "", name: "", rep: 0 };
   try {
-    const h = unescapeHtmlJson(await fetch(`https://www.vinted.es/member/${id}`, { credentials: "include" }).then((r) => r.text()));
-    const i = h.lastIndexOf(`"id":${id},"login"`) >= 0 ? h.lastIndexOf(`"id":${id},"login"`) : h.lastIndexOf(`"id":${id}`);
+    const res = await fetch(`https://www.vinted.es/member/${id}`, { credentials: "include" });
+    const h = unescapeHtmlJson(await res.text());
+    let i = h.lastIndexOf(`"id":${id},"login"`);
+    if (i < 0) i = h.lastIndexOf(`"id":${id}`);
+    if (i < 0) i = h.lastIndexOf(`"id":"${id}"`);
+    if (!vDebugDone) { vDebugDone = true; console.log(`[debug Vinted perfil] estado ${res.status}, ${h.length} bytes, feedback_count:${h.includes("feedback_count")}, pos:${i}, inicio:${h.slice(0, 120).replace(/\s+/g, " ")}`); }
     const seg = h.slice(Math.max(0, i - 200), i + 6000);
     const g = (k) => (seg.match(new RegExp(`"${k}":("[^"]*"|[\\d.]+)`)) || [])[1];
     info = {
