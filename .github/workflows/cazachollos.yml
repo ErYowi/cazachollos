@@ -31,4 +31,4 @@ jobs:
           git config user.name "cazachollos-bot"
           git config user.email "cazachollos-bot@users.noreply.github.com"
           git add seen.json deals.json
-          git diff --cached --quiet || git commit -m "vistos" && git push
+          git diff --cached --quiet || (git commit -m "vistos" && git pull --rebase && git push)
