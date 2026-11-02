@@ -239,14 +239,22 @@ async function vintedUser(id) {
   try {
     const res = await fetch(`https://www.vinted.es/member/${id}`, { credentials: "include" });
     const h = unescapeHtmlJson(await res.text());
+    // ancla: objeto del perfil (con sesión: "id":ID,"login"; sin sesión: ruta /member/ID-login)
     let i = h.lastIndexOf(`"id":${id},"login"`);
+    if (i < 0) i = h.indexOf(`member/${id}-`);
     if (i < 0) i = h.lastIndexOf(`"id":${id}`);
-    if (i < 0) i = h.lastIndexOf(`"id":"${id}"`);
-    if (!vDebugDone) { vDebugDone = true; console.log(`[debug Vinted perfil] estado ${res.status}, ${h.length} bytes, feedback_count:${h.includes("feedback_count")}, pos:${i}, inicio:${h.slice(0, 120).replace(/\s+/g, " ")}`); }
-    const seg = h.slice(Math.max(0, i - 200), i + 6000);
-    const g = (k) => (seg.match(new RegExp(`"${k}":("[^"]*"|[\\d.]+)`)) || [])[1];
+    if (!vDebugDone) { vDebugDone = true; console.log(`[debug Vinted perfil] estado ${res.status}, ${h.length} bytes, pos:${i}`); }
+    const seg = i >= 0 ? h.slice(Math.max(0, i - 4000), i + 4000) : "";
+    const center = Math.min(i, 4000);
+    const g = (k) => {
+      const re = new RegExp(`"${k}":("[^"]*"|[\\d.]+)`, "g");
+      let best = null, bd = Infinity, m;
+      while ((m = re.exec(seg))) { const d = Math.abs(m.index - center); if (d < bd) { bd = d; best = m[1]; } }
+      return best;
+    };
+    const loginFromPath = (h.slice(i, i + 200).match(new RegExp(`member/${id}-([^"/?]+)`)) || [])[1];
     info = {
-      name: (g("login") || "").replace(/"/g, ""),
+      name: (g("login") || loginFromPath || "").replace(/"/g, ""),
       reviews: parseInt(g("feedback_count") || "0", 10),
       rep: parseFloat(g("feedback_reputation") || "0"),
       items: parseInt(g("total_items_count") || g("item_count") || "0", 10),
