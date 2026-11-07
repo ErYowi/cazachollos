@@ -18,6 +18,9 @@ export const DEFAULT_SETTINGS = {
   telegramChatId: "",
   desktopNotifications: true,
   paused: false,
+  useShops: true,           // ofertas de tiendas (Chollómetro)
+  dailySummary: true,       // resumen diario por Telegram a las 21:00
+  telegramMinTier: "B",     // tier mínimo que se manda a Telegram
 };
 
 // nombre, palabras, min, max, debe contener, no debe contener, categoría Wallapop, estricto (anti-estafa reforzado)
@@ -99,7 +102,8 @@ export function isJunkTitle(title, s) {
 }
 
 const H_WALLA = { "X-DeviceOS": "0", Accept: "application/json, text/plain, */*" };
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let MARKET = null; // se rellena durante runScan: [{search, platform, median, count}]
 
 export function median(arr) {
   const s = [...arr].sort((a, b) => a - b);
@@ -116,7 +120,7 @@ export function distanceKm(a, b) {
 }
 
 // ------------------------------- WALLAPOP -------------------------------
-async function wallapopSearch(s, pages = 6) {
+export async function wallapopSearch(s, pages = 6) {
   let url = `https://api.wallapop.com/api/v3/search?source=search_box&keywords=${encodeURIComponent(s.kw)}&order_by=newest&min_sale_price=${s.min}&max_sale_price=${s.max}&latitude=${MURCIA.lat}&longitude=${MURCIA.lon}`;
   const out = [];
   for (let p = 0; p < pages && url; p++) {
@@ -132,7 +136,7 @@ async function wallapopSearch(s, pages = 6) {
 }
 
 const wUserCache = new Map();
-async function wallapopUser(id) {
+export async function wallapopUser(id) {
   if (wUserCache.has(id)) return wUserCache.get(id);
   const [u, s] = await Promise.all([
     fetch(`https://api.wallapop.com/api/v3/users/${id}`, { headers: H_WALLA }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
@@ -182,6 +186,7 @@ async function scanWallapop(s, cfg, seen, log) {
   });
   if (list.length < 8) { log(`Wallapop · ${s.name}: pocos anuncios (${list.length}), salto`); return []; }
   const med = median(list.map((i) => i.price.amount));
+  MARKET?.push({ search: s.name, platform: "Wallapop", median: Math.round(med), count: list.length, low: Math.round(median(list.map((i) => i.price.amount).sort((a, b) => a - b).slice(0, Math.max(1, Math.floor(list.length / 4))))) });
   const deals = [];
   const cands = list
     .filter((i) => i.price.amount <= med * (1 - cfg.minDiscount / 100))
@@ -211,7 +216,7 @@ async function scanWallapop(s, cfg, seen, log) {
 }
 
 // -------------------------------- VINTED --------------------------------
-function unescapeHtmlJson(h) { return h.replace(/\\"/g, '"').replace(/\\u0026/g, "&"); }
+export function unescapeHtmlJson(h) { return h.replace(/\\"/g, '"').replace(/\\u0026/g, "&"); }
 
 function parseVintedCatalog(html) {
   const h = unescapeHtmlJson(html);
@@ -233,7 +238,7 @@ async function vintedSearch(s) {
 
 const vUserCache = new Map();
 let vDebugDone = false;
-async function vintedUser(id) {
+export async function vintedUser(id) {
   if (vUserCache.has(id)) return vUserCache.get(id);
   let info = { reviews: 0, items: 0, country: "?", city: "", name: "", rep: 0 };
   try {
@@ -292,6 +297,7 @@ async function scanVinted(s, cfg, seen, log) {
   const list = raw.filter((i) => incl.test(i.title) && !excl.test(i.title) && !isJunkTitle(i.title, s));
   if (list.length < 8) { log(`Vinted · ${s.name}: pocos anuncios (${list.length}), salto`); return []; }
   const med = median(list.map((i) => i.price));
+  MARKET?.push({ search: s.name, platform: "Vinted", median: Math.round(med), count: list.length });
   const deals = [];
   const cands = list
     .filter((i) => i.price <= med * (1 - cfg.minDiscount / 100) && !hasProblem(i.title, s) && !seen["v" + i.id])
@@ -330,7 +336,8 @@ export function scoreOf(d, cfg) {
   return Math.round(sc);
 }
 
-export async function runScan(cfg, searches, seen, log) {
+export async function runScan(cfg, searches, seen, log, market) {
+  MARKET = market || null;
   const all = [];
   for (const s of searches.filter((x) => x.on)) {
     if (cfg.useWallapop) {
@@ -342,4 +349,107 @@ export async function runScan(cfg, searches, seen, log) {
   }
   for (const d of all) { d.tier = tierOf(d, cfg); d.score = scoreOf(d, cfg); }
   return all.sort((a, b) => b.score - a.score);
+}
+
+
+// ============================================================================
+//  v3 · ANALIZADOR DE ANUNCIOS (para el panel que aparece en cada anuncio)
+// ============================================================================
+export function matchSearch(title, searches, price) {
+  const t = String(title || "");
+  const inRange = (s) => price == null || (price >= s.min * 0.5 && price <= s.max * 1.3);
+  return searches.find((s) => new RegExp(s.incl, "i").test(t) && !new RegExp(s.excl, "i").test(t) && inRange(s)) || null;
+}
+
+const round5 = (x) => Math.max(5, Math.floor(x / 5) * 5);
+
+// Datos que manda el panel: {platform, title, price, description, userId, ship, city}
+export async function analyzeListing(data, searches, marketHistory, cfg) {
+  const s = matchSearch(data.title, searches, data.price);
+  const out = { ...data, search: s?.name || null, flags: [], verdict: "?", notes: [] };
+  // 1) precio de mercado: último dato guardado o búsqueda en vivo en Wallapop
+  let med = null, n = 0, source = "";
+  const hist = s ? (marketHistory?.[s.name] || []) : [];
+  const last = [...hist].reverse().find((p) => p.w);
+  if (last && Date.now() - last.t < 3 * 864e5) { med = last.w; n = last.wn || 0; source = "último escaneo"; }
+  if (!med && s) {
+    try {
+      const raw = await wallapopSearch(s, 2);
+      const incl = new RegExp(s.incl, "i"), excl = new RegExp(s.excl, "i");
+      const prices = raw.filter((i) => incl.test(i.title) && !excl.test(i.title) && !isJunkTitle(i.title, s) && !i?.reserved?.flag).map((i) => i.price.amount);
+      if (prices.length >= 5) { med = Math.round(median(prices)); n = prices.length; source = "Wallapop ahora"; }
+    } catch (e) { out.notes.push("No pude consultar el mercado: " + e.message); }
+  }
+  out.median = med; out.sample = n; out.source = source;
+  // 2) problemas en el texto
+  if (hasProblem(`${data.title} ${data.description || ""}`, s)) out.flags.push("La descripción menciona averías, bloqueos o pagos fuera de la app");
+  if (isJunkTitle(data.title, s)) out.flags.push("Parece caja, juego suelto o pieza, no el producto completo");
+  // 3) vendedor
+  if (data.platform === "Wallapop" && data.userId) {
+    const u = await wallapopUser(data.userId);
+    const t = wallapopTrust(u, !!s?.strict);
+    out.seller = { ...u, ok: t.ok, why: t.why };
+  } else if (data.platform === "Vinted" && data.userId) {
+    const u = await vintedUser(data.userId);
+    const t = vintedTrust(u, !!s?.strict);
+    out.seller = { name: u.name, reviews: u.reviews, stars: u.rep * 5, country: u.country, ok: t.ok, why: t.why };
+  }
+  if (out.seller && !out.seller.ok) out.flags.push("Vendedor: " + out.seller.why);
+  // 4) números
+  if (med && data.price) {
+    out.discount = Math.round((1 - data.price / med) * 100);
+    const resale = Math.round(med * 0.97);                 // vendes un pelín por debajo de la mediana para rotar rápido
+    const costs = data.platform === "Vinted" ? 4 : (data.ship ? 3 : 0); // envío/protección aprox.
+    out.resale = resale;
+    out.profit = Math.round(resale - data.price - costs);
+    out.maxBuy = round5(resale * 0.8 - costs);                // compra máxima para ganar ~20 %
+    out.offer = round5(Math.min(data.price * 0.85, out.maxBuy - 5)); // primera oferta sugerida
+    const tier = out.discount >= cfg.greatDiscount ? "S" : out.discount >= cfg.goodDiscount ? "A" : out.discount >= cfg.minDiscount ? "B" : "-";
+    out.verdict = out.flags.length ? "RIESGO" : tier === "-" ? (data.price <= out.maxBuy ? "NEGOCIAR" : "CARO") : "TIER " + tier;
+  } else {
+    out.verdict = s ? "SIN DATOS" : "NO VIGILADO";
+    if (!s) out.notes.push("Este producto no está en tus búsquedas; añádelo para calcular su precio de mercado.");
+  }
+  return out;
+}
+
+// ============================================================================
+//  v3 · CHOLLÓMETRO (ofertas de tiendas → arbitraje con precio de Wallapop)
+// ============================================================================
+function decodeXml(s) { return String(s || "").replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#039;|&apos;/g, "'"); }
+export function parseRss(xml) {
+  const items = [];
+  for (const m of xml.matchAll(/<item>([\s\S]*?)<\/item>/g)) {
+    const b = m[1];
+    const tag = (t) => decodeXml((b.match(new RegExp(`<${t}[^>]*>([\\s\\S]*?)<\\/${t}>`)) || [])[1]);
+    const mer = b.match(/<pepper:merchant[^>]*name="([^"]*)"[^>]*price="([^"]*)"/) || b.match(/<pepper:merchant[^>]*price="([^"]*)"[^>]*name="([^"]*)"/);
+    const priceTxt = mer ? (mer[0].match(/price="([^"]*)"/) || [])[1] : "";
+    const merchant = mer ? (mer[0].match(/name="([^"]*)"/) || [])[1] : "";
+    const img = (b.match(/<media:content[^>]*url="([^"]+)"/) || b.match(/<media:thumbnail[^>]*url="([^"]+)"/) || [])[1] || "";
+    const price = parseFloat(String(priceTxt).replace(/[^\d,.]/g, "").replace(/\.(?=\d{3})/g, "").replace(",", "."));
+    items.push({ guid: tag("guid") || tag("link"), title: tag("title"), link: tag("link"), cat: tag("category"), merchant, price: isNaN(price) ? null : price, img, date: Date.parse(tag("pubDate")) || Date.now() });
+  }
+  return items;
+}
+
+export async function scanChollometro(searches, marketHistory, seenShop) {
+  const feeds = ["https://www.chollometro.com/rss/nuevos", "https://www.chollometro.com/rss/hot"];
+  const all = [];
+  for (const f of feeds) {
+    try { const r = await fetch(f); if (r.ok) all.push(...parseRss(await r.text())); } catch (e) { /* feed caído */ }
+  }
+  const uniq = new Map(all.map((i) => [i.guid, i]));
+  const out = [];
+  for (const i of uniq.values()) {
+    if (seenShop[i.guid]) continue;
+    const s = matchSearch(i.title, searches, i.price);
+    if (!s || !i.price || isJunkTitle(i.title, s)) continue;
+    seenShop[i.guid] = Date.now();
+    const hist = marketHistory?.[s.name] || [];
+    const last = [...hist].reverse().find((p) => p.w);
+    const med = last?.w || null;
+    const margin = med ? Math.round(med * 0.95 - i.price - 4) : null;
+    out.push({ ...i, search: s.name, median: med, margin, arbitrage: margin != null && margin >= Math.max(15, i.price * 0.12), found: Date.now() });
+  }
+  return out;
 }

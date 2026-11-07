@@ -1,6 +1,6 @@
 // Cazachollos en la nube: se ejecuta solo cada 30 min en GitHub Actions. 0 tokens.
 import fs from "node:fs";
-import { DEFAULT_SETTINGS, DEFAULT_SEARCHES, runScan } from "./scanner.js";
+import { DEFAULT_SETTINGS, DEFAULT_SEARCHES, runScan, scanChollometro } from "./scanner.js";
 
 const TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT = process.env.TELEGRAM_CHAT_ID;
@@ -63,7 +63,23 @@ async function sendDeal(d) {
 // ---------- escaneo ----------
 const log = [];
 const add = (m) => { log.push(m); console.log(m); };
-const deals = await runScan(cfg, searches.filter((s) => s.on !== false), seen, add);
+const marketNow = [];
+const deals = await runScan(cfg, searches.filter((s) => s.on !== false), seen, add, marketNow);
+
+// ---------- ofertas de tiendas (Chollómetro) con margen frente a segunda mano ----------
+try {
+  const market = {};
+  for (const m of marketNow) if (m.platform === "Wallapop") market[m.search] = [{ t: Date.now(), w: m.median }];
+  const seenShop = seen.__shop || {};
+  const shop = await scanChollometro(searches, market, seenShop);
+  const lim = Date.now() - 14 * 864e5;
+  seen.__shop = Object.fromEntries(Object.entries(seenShop).filter(([, t]) => t > lim));
+  const arb = shop.filter((d) => d.arbitrage);
+  add(`Tiendas: ${shop.length} ofertas de tus productos, ${arb.length} con margen`);
+  if (!firstRun) for (const d of arb) {
+    await tg(d.img ? "sendPhoto" : "sendMessage", { ...(d.img ? { photo: d.img, caption: "" } : {}), [d.img ? "caption" : "text"]: `🛒 <b>Oferta de tienda con margen</b> · ${esc(d.merchant)}\n<b>${esc(d.title)}</b>\n💶 ${d.price} € nuevo · segunda mano ~${d.median} €\n💰 Margen estimado: <b>+${d.margin} €</b>\n<a href="${d.link}">👉 Ver oferta</a>` });
+  }
+} catch (e) { add("Error tiendas: " + e.message); }
 
 // Si es la primera vez, no inundar: marca todo como visto y envía solo un resumen + los 3 mejores
 const toSend = firstRun ? deals.slice(0, 3) : deals;
