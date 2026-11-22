@@ -67,6 +67,7 @@ const marketNow = [];
 const deals = await runScan(cfg, searches.filter((s) => s.on !== false), seen, add, marketNow);
 
 // ---------- ofertas de tiendas (Chollómetro) con margen frente a segunda mano ----------
+let shopList = [];
 try {
   const market = {};
   for (const m of marketNow) if (m.platform === "Wallapop") market[m.search] = [{ t: Date.now(), w: m.median }];
@@ -74,6 +75,7 @@ try {
   const shop = await scanChollometro(searches, market, seenShop);
   const lim = Date.now() - 14 * 864e5;
   seen.__shop = Object.fromEntries(Object.entries(seenShop).filter(([, t]) => t > lim));
+  shopList = shop;
   const arb = shop.filter((d) => d.arbitrage);
   add(`Tiendas: ${shop.length} ofertas de tus productos, ${arb.length} con margen`);
   if (!firstRun) for (const d of arb) {
@@ -101,9 +103,26 @@ if (firstRun) {
 }
 
 // ---------- guardar chollos para verlos en la extensión ----------
-const old = fs.existsSync("deals.json") ? JSON.parse(fs.readFileSync("deals.json", "utf8")).deals || [] : [];
+const prevFile = fs.existsSync("deals.json") ? JSON.parse(fs.readFileSync("deals.json", "utf8")) : {};
+const old = prevFile.deals || [];
 const weekAgo = Date.now() - 7 * 864e5;
-fs.writeFileSync("deals.json", JSON.stringify({ updated: Date.now(), wallapop: wOk, vinted: vOk, deals: [...deals, ...old].filter((d) => d.found > weekAgo).slice(0, 200) }));
+// ofertas de tiendas para la app (sin repetir, última semana)
+const shopSeen = new Set();
+const shopKeep = [...shopList, ...(prevFile.shop || [])].filter((d) => d.found > weekAgo && d.link && !shopSeen.has(d.link) && shopSeen.add(d.link)).slice(0, 80);
+fs.writeFileSync("deals.json", JSON.stringify({ updated: Date.now(), wallapop: wOk, vinted: vOk, market: marketNow, shop: shopKeep, deals: [...deals, ...old].filter((d) => d.found > weekAgo).slice(0, 200) }));
+
+// ---------- historial de mercado para la app (60 días) ----------
+try {
+  const mk = fs.existsSync("market.json") ? JSON.parse(fs.readFileSync("market.json", "utf8")) : {};
+  const by = {};
+  for (const m of marketNow) {
+    const b = (by[m.search] ||= { t: Date.now() });
+    if (m.platform === "Vinted") b.v = m.median; else { b.w = m.median; if (m.low) b.wl = m.low; if (m.count) b.wn = m.count; }
+  }
+  const cut = Date.now() - 60 * 864e5;
+  for (const [n, p] of Object.entries(by)) mk[n] = [...(mk[n] || []).filter((x) => x.t > cut), p].slice(-240);
+  fs.writeFileSync("market.json", JSON.stringify(mk));
+} catch (e) { console.log("Error market.json: " + e.message); }
 
 // ---------- guardar vistos (10 días) ----------
 const lim = Date.now() - 10 * 864e5;
